@@ -16,6 +16,7 @@ import json
 from time import sleep
 
 import requests
+import threading
 import uuid
 import logging
 
@@ -190,16 +191,26 @@ class ReportPortalService(object):
         self.is_skipped_an_issue = is_skipped_an_issue
         self.base_url_v1 = uri_join(self.endpoint, "api/v1", self.project)
         self.base_url_v2 = uri_join(self.endpoint, "api/v2", self.project)
-
-        self.session = requests.Session()
-        if retries:
-            self.session.mount('https://', HTTPAdapter(
-                max_retries=retries, pool_maxsize=max_pool_size))
-            self.session.mount('http://', HTTPAdapter(
-                max_retries=retries, pool_maxsize=max_pool_size))
-        self.session.headers["Authorization"] = "Bearer {0}".format(self.token)
+        self.thread_local = threading.local()
+        self.retries = retries
+        self.max_pool_size = max_pool_size
         self.launch_id = kwargs.get('launch_id')
         self.verify_ssl = verify_ssl
+
+    def get_session(self):
+        local = self.thread_local
+        if hasattr(local, 'session'):
+            return local.session
+
+        session = requests.Session()
+        local.session = session
+        if self.retries:
+            session.mount('https://', HTTPAdapter(
+                max_retries=self.retries, pool_maxsize=self.max_pool_size))
+            session.mount('http://', HTTPAdapter(
+                max_retries=self.retries, pool_maxsize=self.max_pool_size))
+        session.headers["Authorization"] = "Bearer {0}".format(self.token)
+        return session
 
     def terminate(self, *args, **kwargs):
         """Call this to terminate the service."""
@@ -228,7 +239,7 @@ class ReportPortalService(object):
             "rerunOf": rerunOf
         }
         url = uri_join(self.base_url_v2, "launch")
-        r = self.session.post(url=url, json=data, verify=self.verify_ssl)
+        r = self.get_session().post(url=url, json=data, verify=self.verify_ssl)
         self.launch_id = _get_id(r)
         logger.debug("start_launch - ID: %s", self.launch_id)
         return self.launch_id
@@ -251,7 +262,7 @@ class ReportPortalService(object):
             "attributes": verify_value_length(attributes)
         }
         url = uri_join(self.base_url_v2, "launch", self.launch_id, "finish")
-        r = self.session.put(url=url, json=data, verify=self.verify_ssl)
+        r = self.get_session().put(url=url, json=data, verify=self.verify_ssl)
         logger.debug("finish_launch - ID: %s", self.launch_id)
         return _get_msg(r)
 
@@ -270,7 +281,7 @@ class ReportPortalService(object):
 
         for _ in range(max_retries):
             logger.debug("get_launch_info - ID: %s", self.launch_id)
-            resp = self.session.get(url=url, verify=self.verify_ssl)
+            resp = self.get_session().get(url=url, verify=self.verify_ssl)
 
             if resp.status_code == 200:
                 launch_info = _get_json(resp)
@@ -354,7 +365,7 @@ class ReportPortalService(object):
             url = uri_join(self.base_url_v2, "item", parent_item_id)
         else:
             url = uri_join(self.base_url_v2, "item")
-        r = self.session.post(url=url, json=data, verify=self.verify_ssl)
+        r = self.get_session().post(url=url, json=data, verify=self.verify_ssl)
 
         item_id = _get_id(r)
         logger.debug("start_test_item - ID: %s", item_id)
@@ -374,7 +385,7 @@ class ReportPortalService(object):
         }
         item_id = self.get_item_id_by_uuid(item_uuid)
         url = uri_join(self.base_url_v1, "item", item_id, "update")
-        r = self.session.put(url=url, json=data, verify=self.verify_ssl)
+        r = self.get_session().put(url=url, json=data, verify=self.verify_ssl)
         logger.debug("update_test_item - Item: %s", item_id)
         return _get_msg(r)
 
@@ -411,7 +422,7 @@ class ReportPortalService(object):
             "attributes": verify_value_length(attributes)
         }
         url = uri_join(self.base_url_v2, "item", item_id)
-        r = self.session.put(url=url, json=data, verify=self.verify_ssl)
+        r = self.get_session().put(url=url, json=data, verify=self.verify_ssl)
         logger.debug("finish_test_item - ID: %s", item_id)
         return _get_msg(r)
 
@@ -422,7 +433,7 @@ class ReportPortalService(object):
         :return str:     Test item id
         """
         url = uri_join(self.base_url_v1, "item", "uuid", uuid)
-        return _get_json(self.session.get(
+        return _get_json(self.get_session().get(
             url=url, verify=self.verify_ssl))["id"]
 
     def get_project_settings(self):
@@ -432,7 +443,7 @@ class ReportPortalService(object):
         :return: json body
         """
         url = uri_join(self.base_url_v1, "settings")
-        r = self.session.get(url=url, json={}, verify=self.verify_ssl)
+        r = self.get_session().get(url=url, json={}, verify=self.verify_ssl)
         logger.debug("settings")
         return _get_json(r)
 
@@ -508,7 +519,7 @@ class ReportPortalService(object):
         files.extend(attachments)
         for i in range(POST_LOGBATCH_RETRY_COUNT):
             try:
-                r = self.session.post(
+                r = self.get_session().post(
                     url=url,
                     files=files,
                     verify=self.verify_ssl
